@@ -146,6 +146,9 @@ class OllamaSession:
 
             yield part
 
+            if chunk["message"].thinking:
+                continue
+
             response_data = self._extract_json(full_response)
 
             if response_data and "tool" in response_data:
