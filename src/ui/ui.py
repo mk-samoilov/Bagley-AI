@@ -52,7 +52,7 @@ class ChatUI:
             self.answer_stream = None
 
         except KeyboardInterrupt:
-            print("\n\nGeneration corrupted\n")
+            print("\n\nGeneration corrupted.\n")
 
             self._generating_answer = False
             self._waiting_input = True

@@ -2,7 +2,8 @@ from ollama import chat
 
 import json
 import re
-import inspect
+import importlib
+import pkgutil
 
 from configs.model_cfg import (
     MODEL_NAME,
@@ -12,7 +13,9 @@ from configs.model_cfg import (
     TOP_PROBABILITY
 )
 
-import src.ollm.tools as tools
+import src.ollm.tools as tools_pkg
+
+from src.ollm.classes import ToolResponse
 
 
 class OllamaSession:
@@ -25,73 +28,107 @@ class OllamaSession:
         self.messages = [
             {
                 "role": "system",
-                "content": self.get_sys_prompt()
+                "content": self.make_sys_prompt()
             }
         ]
 
-    # -------------------------
-    # SYSTEM PROMPT
-    # -------------------------
-    @staticmethod
-    def get_sys_prompt():
-        with open(SYSTEM_PROMPT_FILE, "r") as f:
-            return f.read()
+    def make_sys_prompt(self):
+        with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
+            prompt = f.read()
 
-    # -------------------------
-    # TOOL REGISTRY
-    # -------------------------
-    def _load_tools(self):
+        return prompt.replace(
+            "%ACCESSIBLE_TOOLS%",
+            self._build_tools_prompt()
+        )
+    
+
+    def _build_tools_prompt(self):
+        blocks = []
+
+        for tool_name, tool_data in self.tools.items():
+            description = tool_data["description"].strip()
+
+            block = (
+                f"# {tool_name}\n"
+                f"{'-' * (len(tool_name) + 2)}\n"
+                f"{description}"
+            )
+
+            blocks.append(block)
+
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _load_tools():
         registry = {}
 
-        for name in dir(tools):
-            fn = getattr(tools, name)
+        for _, module_name, is_pkg in pkgutil.iter_modules(
+            tools_pkg.__path__
+        ):
+            if is_pkg:
+                continue
 
-            if inspect.isfunction(fn):
-                registry[name] = fn
+            module = importlib.import_module(
+                f"{tools_pkg.__name__}.{module_name}"
+            )
+
+            if hasattr(module, "execute") and callable(module.execute):
+                registry[module_name] = {
+                    "execute": module.execute,
+                    "description": getattr(
+                        module,
+                        "DESCRIPTION",
+                        f"{module_name}\nNo description available."
+                    )
+                }
 
         return registry
 
-    # -------------------------
-    # CLEAN JSON (ВАЖНО ДЛЯ 7B)
-    # -------------------------
-    def _extract_json(self, text: str):
-        # убираем markdown
+    @staticmethod
+    def _extract_json(text: str):
         text = text.replace("```json", "")
         text = text.replace("```", "")
+        text = text.strip()
 
-        # ищем JSON объект
         match = re.search(r"\{.*\}", text, re.DOTALL)
+
         if not match:
             return None
 
         try:
             return json.loads(match.group(0))
+
         except json.JSONDecodeError:
             return None
 
-    # -------------------------
-    # TOOL RUNNER
-    # -------------------------
-    def _run_tool(self, tool_name, args):
+    def run_tool(self, tool_name, args):
         if tool_name not in self.tools:
-            return f"[error] tool not allowed: {tool_name}"
+            return ToolResponse(
+                tool_output={},
+                errors=f"Tool not found: {tool_name}"
+            )
 
-        fn = self.tools[tool_name]
+        fn = self.tools[tool_name]["execute"]
 
         try:
             return fn(self.core, **args)
-        except Exception as e:
-            return f"[tool error] {str(e)}"
 
-    # -------------------------
-    # STREAM MAIN
-    # -------------------------
+        except Exception as e:
+            return ToolResponse(
+                tool_output={},
+                errors=f"Tool execution failed: {str(e)}"
+            )
+
     def handle_msg_stream(self, user_prompt: str):
         self.messages.append({
             "role": "user",
             "content": user_prompt
         })
 
+        yield from self._process_response()
+
+
+    def _process_response(self):
         full_response = ""
 
         for chunk in chat(
@@ -106,39 +143,35 @@ class OllamaSession:
         ):
             part = chunk["message"]["content"]
             full_response += part
+
             yield part
 
-        # -------------------------
-        # TOOL CHECK
-        # -------------------------
-        data = self._extract_json(full_response)
+            response_data = self._extract_json(full_response)
 
-        if data and "tool" in data:
-            tool_name = data["tool"]
-            args = data.get("args", {})
+            if response_data and "tool" in response_data:
+                tool_name = response_data["tool"]
+                args = response_data.get("args", {})
 
-            result = self._run_tool(tool_name, args)
+                result = self.run_tool(
+                    tool_name=tool_name,
+                    args=args
+                ).to_json()
+
+                self.messages.append({
+                    "role": "assistant",
+                    "content": full_response
+                })
+
+                self.messages.append({
+                    "role": "tool",
+                    "content": result
+                })
+
+                yield from self._process_response()
+
+                return
 
             self.messages.append({
                 "role": "assistant",
                 "content": full_response
             })
-
-            self.messages.append({
-                "role": "tool",
-                "content": str(result)
-            })
-
-            # второй проход (ответ с результатом tool)
-            yield from self.handle_msg_stream(
-                f"Tool result: {result}\nContinue answer naturally."
-            )
-            return
-
-        # -------------------------
-        # NORMAL FINISH
-        # -------------------------
-        self.messages.append({
-            "role": "assistant",
-            "content": full_response
-        })
