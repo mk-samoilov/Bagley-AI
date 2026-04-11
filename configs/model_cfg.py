@@ -10,4 +10,4 @@ CONTEXT_CHUNKS: int = 8192
 
 SYSTEM_PROMPT_FILE: str = "configs/system-prompt.txt"
 
-WORK_DIR: str = os.getcwd()
+WORK_DIR: str = os.environ.get("BAGLEY_WORK_DIR", os.getcwd())
