@@ -1,4 +1,8 @@
+import os
+
 from src.ollm.classes import ToolResponse
+
+from configs.model_cfg import WORK_DIR
 
 
 DESCRIPTION = "Writes text content to a file. Creates the file if it does not exist, overwrites if it does."
@@ -21,7 +25,8 @@ PARAMETERS = {
 
 def execute(core, path: str, content: str):
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        full_path = os.path.join(WORK_DIR, path)
+        with open(full_path, "w", encoding="utf-8") as f:
             f.write(content)
 
         return ToolResponse(

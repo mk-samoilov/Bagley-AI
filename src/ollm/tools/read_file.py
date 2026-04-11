@@ -1,4 +1,8 @@
+import os
+
 from src.ollm.classes import ToolResponse
+
+from configs.model_cfg import WORK_DIR
 
 
 DESCRIPTION = "Reads the contents of a file and returns it as text."
@@ -17,7 +21,8 @@ PARAMETERS = {
 
 def execute(core, path: str):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        full_path = os.path.join(WORK_DIR, path)
+        with open(full_path, "r", encoding="utf-8") as f:
             content = f.read()
 
         return ToolResponse(

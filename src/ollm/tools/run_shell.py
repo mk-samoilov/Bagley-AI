@@ -4,6 +4,8 @@ import subprocess
 
 from src.ollm.classes import ToolResponse
 
+from configs.model_cfg import WORK_DIR
+
 
 DESCRIPTION = "Runs a shell command and returns stdout/stderr output and return code."
 
@@ -26,6 +28,7 @@ def execute(core, cmd: str):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        cwd=WORK_DIR,
     )
 
     stdout_lines: list[str] = []
