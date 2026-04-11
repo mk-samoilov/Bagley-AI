@@ -5,17 +5,18 @@ import subprocess
 from src.ollm.classes import ToolResponse
 
 
-DESCRIPTION = """
-Runs a shell command and returns the output.
+DESCRIPTION = "Runs a shell command and returns stdout/stderr output and return code."
 
-Usage example:
-{
-    "tool": "run_shell",
-    "args": {
-        "cmd": "ls -la"
-    }
+PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "cmd": {
+            "type": "string",
+            "description": "Shell command to execute"
+        }
+    },
+    "required": ["cmd"]
 }
-"""
 
 
 def execute(core, cmd: str):
@@ -34,7 +35,7 @@ def execute(core, cmd: str):
     while proc.poll() is None:
         readable, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.1)
         for stream in readable:
-            line = stream.readline().strip() # type: ignore
+            line = stream.readline().strip()  # type: ignore
             if line:
                 bucket = stdout_lines if stream == proc.stdout else stderr_lines
                 bucket.append(line)

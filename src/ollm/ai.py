@@ -1,9 +1,8 @@
 from ollama import chat
 
-import json
-import re
 import importlib
 import pkgutil
+from typing import Any
 
 from configs.model_cfg import (
     MODEL_NAME,
@@ -25,81 +24,47 @@ class OllamaSession:
 
         self.tools = self._load_tools()
 
-        self.messages = [
+        self.messages: list[Any] = [
             {
                 "role": "system",
-                "content": self.make_sys_prompt()
+                "content": self._load_sys_prompt()
             }
         ]
 
-    def make_sys_prompt(self):
+    def _load_sys_prompt(self):
         with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
-            prompt = f.read()
-
-        return prompt.replace(
-            "%ACCESSIBLE_TOOLS%",
-            self._build_tools_prompt()
-        )
-    
-
-    def _build_tools_prompt(self):
-        blocks = []
-
-        for tool_name, tool_data in self.tools.items():
-            description = tool_data["description"].strip()
-
-            block = (
-                f"# {tool_name}\n"
-                f"{'-' * (len(tool_name) + 2)}\n"
-                f"{description}"
-            )
-
-            blocks.append(block)
-
-        return "\n\n".join(blocks)
+            return f.read()
 
     @staticmethod
     def _load_tools():
         registry = {}
 
-        for _, module_name, is_pkg in pkgutil.iter_modules(
-            tools_pkg.__path__
-        ):
+        for _, module_name, is_pkg in pkgutil.iter_modules(tools_pkg.__path__):
             if is_pkg:
                 continue
 
-            module = importlib.import_module(
-                f"{tools_pkg.__name__}.{module_name}"
-            )
+            module = importlib.import_module(f"{tools_pkg.__name__}.{module_name}")
 
             if hasattr(module, "execute") and callable(module.execute):
                 registry[module_name] = {
                     "execute": module.execute,
-                    "description": getattr(
-                        module,
-                        "DESCRIPTION",
-                        f"{module_name}\nNo description available."
-                    )
+                    "schema": {
+                        "type": "function",
+                        "function": {
+                            "name": module_name,
+                            "description": getattr(module, "DESCRIPTION", module_name),
+                            "parameters": getattr(module, "PARAMETERS", {
+                                "type": "object",
+                                "properties": {}
+                            })
+                        }
+                    }
                 }
 
         return registry
 
-    @staticmethod
-    def _extract_json(text: str):
-        text = text.replace("```json", "")
-        text = text.replace("```", "")
-        text = text.strip()
-
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-
-        if not match:
-            return None
-
-        try:
-            return json.loads(match.group(0))
-
-        except json.JSONDecodeError:
-            return None
+    def _tools_list(self):
+        return [data["schema"] for data in self.tools.values()]
 
     def run_tool(self, tool_name, args):
         if tool_name not in self.tools:
@@ -108,10 +73,8 @@ class OllamaSession:
                 errors=f"Tool not found: {tool_name}"
             )
 
-        fn = self.tools[tool_name]["execute"]
-
         try:
-            return fn(self.core, **args)
+            return self.tools[tool_name]["execute"](self.core, **args)
 
         except Exception as e:
             return ToolResponse(
@@ -120,60 +83,53 @@ class OllamaSession:
             )
 
     def handle_msg_stream(self, user_prompt: str):
-        self.messages.append({
-            "role": "user",
-            "content": user_prompt
-        })
-
+        self.messages.append({"role": "user", "content": user_prompt})
         yield from self._process_response()
-
 
     def _process_response(self):
         full_response = ""
+        tool_calls = []
 
         for chunk in chat(
             model=self.model,
             messages=self.messages,
             stream=True,
+            tools=self._tools_list(),
             options={
                 "temperature": TEMPERATURE,
                 "top_p": TOP_PROBABILITY,
                 "num_ctx": CONTEXT_CHUNKS
             }
         ):
-            part = chunk["message"]["content"]
-            full_response += part
+            part = chunk.message.content or ""
+            if part:
+                full_response += part
+                yield part
 
-            yield part
+            if chunk.message.tool_calls:
+                tool_calls = chunk.message.tool_calls
 
-            if chunk["message"].thinking:
-                continue
+        if tool_calls:
+            self.messages.append({
+                "role": "assistant",
+                "content": full_response,
+                "tool_calls": tool_calls
+            })
 
-            response_data = self._extract_json(full_response)
+            for tool_call in tool_calls:
+                name = tool_call.function.name
+                args = tool_call.function.arguments
 
-            if response_data and "tool" in response_data:
-                tool_name = response_data["tool"]
-                args = response_data.get("args", {})
-
-                result = self.run_tool(
-                    tool_name=tool_name,
-                    args=args
-                ).to_json()
-
-                self.messages.append({
-                    "role": "assistant",
-                    "content": full_response
-                })
+                result = self.run_tool(name, args)
 
                 self.messages.append({
                     "role": "tool",
-                    "content": result
+                    "content": result.to_json()
                 })
 
-                yield from self._process_response()
+            yield from self._process_response()
 
-                return
-
+        else:
             self.messages.append({
                 "role": "assistant",
                 "content": full_response
