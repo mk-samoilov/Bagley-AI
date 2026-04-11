@@ -120,6 +120,9 @@ class OllamaSession:
                 name = tool_call.function.name
                 args = tool_call.function.arguments
 
+                props = "\n".join(f'  "{k}": "{v}"' for k, v in args.items())
+                yield f"\nUsed tool '{name}':\n{props}\n\n"
+
                 result = self.run_tool(name, args)
 
                 self.messages.append({
