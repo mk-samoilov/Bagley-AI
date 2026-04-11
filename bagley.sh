@@ -1,2 +1,3 @@
 #!/bin/bash
-BAGLEY_WORK_DIR="$PWD" python -m src.main
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+cd "$SCRIPT_DIR" && BAGLEY_WORK_DIR="$OLDPWD" "$SCRIPT_DIR/.venv/bin/python" -m src.main
